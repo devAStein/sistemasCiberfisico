@@ -43,6 +43,88 @@ LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
 const char *ssid = "Oi_AA16";
 const char *pass = "J6XbunM9";
 
+float carregarTotalEEPROM() {
+  float valor;
+  EEPROM.get(0, valor);
+  return isnan(valor) ? 0 : valor;
+}
+
+// Deep sleep
+void entrarEmSleep() {
+  Serial.println("Modo: Deep Sleep - Consumo estimado: ~10 µA");
+  Serial.println("Entrando em deep sleep...");
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Sem fluxo...");
+  lcd.setCursor(0, 1);
+  lcd.print("Dormindo...");
+  delay(2000);
+  lcd.noBacklight();
+
+  WiFi.disconnect(true);
+  detachInterrupt(digitalPinToInterrupt(sensorPin));
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)sensorPin, 0);
+  esp_deep_sleep_start();
+}
+
+// Encoder: mudança de modo
+void verificarMudancaModo() {
+  static int ultimoCLK = HIGH;
+  static int ultimoDT = HIGH;
+
+  int atualCLK = digitalRead(pinCLK);
+  int atualDT = digitalRead(pinDT);
+
+  if (atualCLK == LOW && ultimoCLK == HIGH) {
+    modoAtual++;
+    if (modoAtual > 3) modoAtual = 1;
+
+    lcd.clear();
+    switch (modoAtual) {
+      case 1: lcd.print("Modo 1: Medicao"); break;
+      case 2: lcd.print("Modo 2: Reset"); break;
+      case 3: lcd.print("Modo 3: BT Ajuste"); break;
+    }
+
+    Serial.println("Mudou para modo: " + String(modoAtual));
+    aguardandoConfirmacao = false;
+  }
+
+  ultimoCLK = atualCLK;
+  ultimoDT = atualDT;
+}
+
+// Botão: reset
+void verificarBotaoReset() {
+  static int ultimoEstadoSW = HIGH;
+  int estadoSW = digitalRead(pinSW);
+
+  if (estadoSW == LOW && ultimoEstadoSW == HIGH && millis() - ultimoDebounce > debounceDelay) {
+    ultimoDebounce = millis();
+
+    if (modoAtual == 2 && !aguardandoConfirmacao) {
+      aguardandoConfirmacao = true;
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Confirma reset?");
+      lcd.setCursor(0, 1);
+      lcd.print("Pressione SW");
+    } else if (modoAtual == 2 && aguardandoConfirmacao) {
+      totalLitros = 0;
+      salvarTotalEEPROM(totalLitros);
+      aguardandoConfirmacao = false;
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Reset realizado");
+      delay(1500);
+      lcd.clear();
+    }
+  }
+
+  ultimoEstadoSW = estadoSW;
+}
+
 void setup() {
   // put your setup code here, to run once:
 
