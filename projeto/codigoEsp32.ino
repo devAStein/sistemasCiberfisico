@@ -199,12 +199,136 @@ void verificarBotaoReset() {
   ultimoEstadoSW = estadoSW;
 }
 
+// Setup
 void setup() {
-  // put your setup code here, to run once:
+  Serial.begin(115200);
+  SerialBT.begin("FluxoESP32");
+  EEPROM.begin(EEPROM_SIZE);
 
+  pinMode(sensorPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(sensorPin), contarPulso, RISING);
+
+  pinMode(pinCLK, INPUT_PULLUP);
+  pinMode(pinDT, INPUT_PULLUP);
+  pinMode(pinSW, INPUT_PULLUP);
+
+  lcd.init();
+  lcd.backlight();
+
+  totalLitros = carregarTotalEEPROM();
+  connectWiFi();
+
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
+    lcd.setCursor(0, 0);
+    lcd.print("Acordou por fluxo");
+    Serial.println("Acordou do deep sleep por fluxo.");
+    delay(5000);
+
+    pulsos = 0;
+    attachInterrupt(digitalPinToInterrupt(sensorPin), contarPulso, RISING);
+    delay(3000);
+    detachInterrupt(digitalPinToInterrupt(sensorPin));
+
+    if (pulsos < MIN_PULSOS) {
+      Serial.println("Fluxo insuficiente. Voltando para sleep...");
+      entrarEmSleep();
+    }
+  }
 }
 
+// Loop principal
 void loop() {
-  // put your main code here, to run repeatedly:
+  if (millis() - ultimaLeitura >= 1000) {
+    detachInterrupt(digitalPinToInterrupt(sensorPin));
 
+    if (pulsos >= MIN_PULSOS) {
+      fluxoAtivo = true;
+      vazaoLMin = pulsos / 7.5;
+      totalLitros += vazaoLMin / 60.0;
+      ultimoFluxoAtivo = millis();
+    } else {
+      fluxoAtivo = false;
+      vazaoLMin = 0;
+    }
+
+    if (!fluxoAtivo && millis() - ultimoFluxoAtivo > 60000) {
+      salvarTotalEEPROM(totalLitros);
+      entrarEmSleep();
+    }
+
+    // Mostra modo atual e estimativa de consumo
+    if (fluxoAtivo) {
+      Serial.println("Modo: Ativo com fluxo - Consumo estimado: ~200 mA");
+    } else {
+      Serial.println("Modo: Ativo sem fluxo - Consumo estimado: ~80 mA");
+    }
+
+    if (modoAtual == 1) {
+      if (abs(vazaoLMin - lastVazao) > 0.1 || abs(totalLitros - lastTotal) > 0.01) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Vazao: ");
+        lcd.print(vazaoLMin, 2);
+        lcd.print(" L/m");
+
+        lcd.setCursor(0, 1);
+        lcd.print("Total: ");
+        lcd.print(totalLitros, 2);
+        lcd.print(" L");
+
+        lastVazao = vazaoLMin;
+        lastTotal = totalLitros;
+      }
+    } else if (modoAtual == 2 && !aguardandoConfirmacao) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Modo Reset Manual");
+      lcd.setCursor(0, 1);
+      lcd.print("Pressione SW");
+    } else if (modoAtual == 3) {
+      lcd.setCursor(0, 0);
+      lcd.print("BT: Envie litros");
+    }
+
+    Serial.printf("Vazao: %.2f L/min | Total: %.2f L\n", vazaoLMin, totalLitros);
+
+    if (fluxoAtivo && millis() - ultimaTransmissao > intervaloTransmissao) {
+      enviarDados(vazaoLMin / 1000.0, totalLitros / 1000.0);
+      ultimaTransmissao = millis();
+    }
+
+    salvarTotalEEPROM(totalLitros);
+
+    pulsos = 0;
+    ultimaLeitura = millis();
+    attachInterrupt(digitalPinToInterrupt(sensorPin), contarPulso, RISING);
+  }
+
+  verificarMudancaModo();
+  verificarBotaoReset();
+
+  // Modo 3: Bluetooth - ajuste de total
+  if (modoAtual == 3 && SerialBT.available()) {
+    String entrada = SerialBT.readStringUntil('\n');
+    entrada.trim();
+    float novoTotal = entrada.toFloat();
+
+    if (novoTotal >= 0.0) {
+      totalLitros = novoTotal;
+      salvarTotalEEPROM(totalLitros);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Novo total:");
+      lcd.setCursor(0, 1);
+      lcd.print(totalLitros, 2);
+      lcd.print(" L");
+
+      Serial.println("Total ajustado via BT: " + String(totalLitros, 2));
+      delay(3000);
+      modoAtual = 1;
+      lcd.clear();
+    } else {
+      Serial.println("Entrada invalida via BT.");
+    }
+  }
 }
